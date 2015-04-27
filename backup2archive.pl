@@ -86,9 +86,7 @@ for my $u (@work_users) {
       unless ($u =~ /^_/ || $u =~ /archive$/);
 }
 
-#print (join ("\n", @users), "\n");
-
-print "processing up to ", $#users + 1, " accounts\n";
+print "up to ", $#users + 1, " accounts to process\n";
 
 my $count=1;
 
@@ -104,6 +102,9 @@ for my $user (@users) {
     print ") at ", `date`;
     my $archive;
 
+
+
+    ## find archive account to which to restore
     print "finding archive account...\n";
     $archive = `zmprov ga $user zimbraarchiveaccount|grep -i zimbraArchiveAccount| awk '{print \$2}'`;
     chomp $archive;
@@ -117,133 +118,97 @@ for my $user (@users) {
     print "\nrestoring $recovery_user...\n";
 
 
+    ## restore primary account with --skipDeletes to _recovery_ account
+    my $restore_cmd = "zmrestore -d --skipDeletes -a $user -restoreToTime 20150413.121500 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
+    print "$restore_cmd\n";
+    unless (exists $opts{n}) {
+    	# if (system($restore_cmd)) {
+	#     print "\nrestore failed, exiting\n";
+    	#     cleanup();
+    	#     exit;
+    	# }
 
-    # my $restore_cmd = "zmrestore -d --skipDeletes -a $user -restoreToTime 20150413.121500 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
-    # print "$restore_cmd\n";
-    # unless (exists $opts{n}) {
-    # 	# if (system($restore_cmd)) {
-    # 	#     print "\nrestore failed, exiting\n";
-    # 	#     cleanup();
-    # 	#     exit;
-    # 	# }
-
-    # 	if (system($restore_cmd)) {
-    # 	    print "\nrestore failed, trying with --ignoreRedoErrors\n";
-    # 	    my $restore_ignoreredo_cmd = "zmrestore -d --skipDeletes --ignoreRedoErrors -a $user -restoreToTime 20150413.121500 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
-    # 	    print $restore_ignoreredo_cmd . "\n";
-    # 	    if (system ($restore_ignoreredo_cmd)) {
-    # 		print "\nrestore failed with --ignoreRedoErrors, giving up\n";
-    # 		cleanup();
-    # 		exit;
-    # 	    }
-    # 	}
-    # }
-
-    # print "removing archive from $recovery_user...\n";
-    # my $cmd = "zmprov ma $recovery_user amavisArchiveQuarantineTo ''";
-    # print $cmd . "\n";
-    # unless (exists $opts{n}) {
-    # 	system ($cmd);
-    # }
-
-    # my $groups = `ldapsearch -LLL -x -w $z_admin_pass -D cn=config -H ldap://$z_ldap_host zimbraMailForwardingAddress=$recovery_user dn mail|grep mail:|awk '{print \$2}'`;
-
-    # my @groups = split (/\n/, $groups);
-
-    # print "\nremoving dist list memberships: " . join (' ', @groups) . "\n";
-
-    # unless (exists $opts{n}) {
-    # 	open (ZMPROV, "|zmprov");
-    # 	for my $g (@groups) {
-    # 	    print ZMPROV "mdl $g -zimbraMailForwardingAddress $recovery_user\n";
-    # 	}
-    # 	close (ZMPROV);
-    # 	print "\n";
-    # }
-
-    # print "\n";
+    	if (system($restore_cmd)) {
+    	    print "\nrestore failed, trying with --ignoreRedoErrors\n";
+    	    my $restore_ignoreredo_cmd = "zmrestore -d --skipDeletes --ignoreRedoErrors -a $user -restoreToTime 20150413.123000 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
+    	    print $restore_ignoreredo_cmd . "\n";
+    	    if (system ($restore_ignoreredo_cmd)) {
+    		print "\nrestore failed with --ignoreRedoErrors, giving up\n";
+    		cleanup();
+    		exit;
+    	    }
+    	}
+    }
 
 
+    ## remove amavisArchiveQuarantineTo from _recovery_ account to save archive licenses
+    print "removing archive from $recovery_user...\n";
+    my $cmd = "zmprov ma $recovery_user amavisArchiveQuarantineTo ''";
+    print $cmd . "\n";
+    unless (exists $opts{n}) {
+    	system ($cmd);
+    }
 
 
+    ## remove dist list memberships
+    my $groups = `ldapsearch -LLL -x -w $z_admin_pass -D cn=config -H ldap://$z_ldap_host zimbraMailForwardingAddress=$recovery_user dn mail|grep mail:|awk '{print \$2}'`;
+    my @groups = split (/\n/, $groups);
+    print "\nremoving dist list memberships: " . join (' ', @groups) . "\n";
+
+    unless (exists $opts{n}) {
+    	open (ZMPROV, "|zmprov");
+    	for my $g (@groups) {
+    	    print ZMPROV "mdl $g -zimbraMailForwardingAddress $recovery_user\n";
+    	}
+    	close (ZMPROV);
+    	print "\n";
+    }
+
+    print "\n";
+
+
+
+    ## export mail from 4/10 to 4/13
     print "exporting mail from 4/10/15 to 4/13/15...\n";
 
 #    my $export_cmd = "zmmailbox -z -m $recovery_user gru '//?fmt=tgz&query=under:/ after:\"4/9/15\" AND before:\"4/14/15\"' > /var/tmp/msgs.tgz 2>&1";
 #    print $export_cmd . "\n";
-
-
     unless (exists $opts{n}) {
+	##   system won't fly as stderr must be captured to tell the
+	##   difference between a failure because no mail was exported for
+	##   that time range and a failure for another reason
     	# if (system ($export_cmd)) {
     	#     print "export failed, exiting.\n";
     	#     cleanup();
     	#     exit;
     	# }
 
-#	my $import_fh;
-#	if (open ($import_fh, "$export_cmd|")) {
-	# if (open ($import_fh, "-|", "zmmailbox", "-z", "-m", $recovery_user, "gru", "'//?fmt=tgz&query=under:/", "after:\"4/9/15\"'", "AND", "before:\"4/14/15\"'",  ">",  "/var/tmp/msgs.tgz", "2>&1" )) {
-	#     local $/;
-	#     my $output = <$import_fh>;
-
-
-
-
-	# my $output = `$export_cmd`;
-	# print "output: /$output/\n";
-	# if ($output =~ /status=204.  No data found/) {
-	#     print "$user: no data to import, skipping.\n";
-	#     cleanup();
-	#     print "finished $user at ", `date`;
-	#     next;
-	# } elsif ($output !~ //) {
-	#     print "zmmailbox output found, possibly failure?\n";
-	#     print $output;
-	#     print "Exiting just in case.\n";
-	#     exit;
-	# }
-
-
-
-
-	# my @cmd = qw%zmmailbox -z -m%;
-	# push @cmd, $recovery_user;
-	# push @cmd, qw%gru '//?fmt=tgz&query=under:/ after:"4/9/15" AND before:"4/14/15"'%;
-
 	my @cmd = qw/zmmailbox -z -m/;
 	push @cmd, $recovery_user;
 	push @cmd, "gru";
         push @cmd, "'//?fmt=tgz&query=under:/ after:\"4/9/15\" AND before:\"4/14/15\"'";
 
-	print "cmd: ", join (' ', @cmd, "\n");
+	print join (' ', @cmd, "\n");
 
-#	my $h = start \@cmd, '>pipe', \*OUT, '2>pipe', \*ERR;
 	my $h = start \@cmd, '>', '/var/tmp/msgs.tgz', '2>pipe', \*ERR;
-
-#	my $h = start \@cmd, '>', '/var/tmp/msgs.tgz';
-
 	my $rc = finish $h;
 
-	print "rc $rc\n";
-#	print <OUT>;
-#      print <ERR>;
 	my @err;
 	while (<ERR>) {
 	    push @err, $_;
 	}
-
-#	close OUT;
 	close ERR;
+
 	my $err = join ' ', @err;
-	# if (grep /status=204.  No data found/, @err) {
-	#     print "$user: no data to import, skipping.\n";
-	#     cleanup();
-	#     print "finished $user at ", `date`;
-	#     next;
-	# }
 
 	if ($err =~ /status=204.  No data found/) {
 	    print "$user: no data to import, skipping.\n";
-	#     cleanup();
+	    cleanup();
+	    $count++;
+	    if ($count > $opts{c}) {
+		print "\nStopped processing at requested count $opts{c}, exiting.\n";
+		last;
+	    }
 	    print "finished $user at ", `date`;
 	    next;
 	}
@@ -251,43 +216,15 @@ for my $user (@users) {
 	if (!$rc) {
 	    print $err;
     	    print "export failed, exiting.\n";
-#    	    cleanup();
+    	    cleanup();
     	    exit;
     	}
-
-
-
-	# assume success if there was no output
-	
-#	}
-
-
-
-
-	exit;
-
-
-
-
-
-	# my $url = 'https://mail.domain.org//?fmt=tgz&query=under:/ after:"4/9/15" AND before:"4/14/15"';
-
-	# my $browser = LWP::UserAgent->new(keep_alive=>1);
-	# $browser->env_proxy;
-	# $browser->credentials('cc.domain.org:443','','admin'=>'Ang3lic0'); 
-	# my $response = $browser->get($url);
-	# die 'error getting $url' unless $response-> is_success;
-	# print "content type is ", $response->content_type;
-	# open (OUT, "/var/tmp/msgs.tgz");
-	# print OUT $response->content;
-	# close OUT;
-
-
-
-
-
     }
 
+
+
+    ## decompress exported files, move to $restore_dir and compress for input via pru
+    
     my $decompress_cmd = "(mkdir /var/tmp/$restore_dir && mkdir /var/tmp/msgs && cd /var/tmp/msgs && tar xfz ../msgs.tgz)";
     print $decompress_cmd . "\n";
     unless (exists $opts{n}) {
@@ -298,9 +235,8 @@ for my $user (@users) {
     	}
     }
 
-
     print "\n";
-    print "moving messages to import.tgz...\n";
+    print "moving messages to $restore_dir...\n";
     unless (exists $opts{n}) {
     	find (\&wanted, qw:/var/tmp/msgs:);
     }
@@ -369,11 +305,11 @@ sub wanted {
 
 sub cleanup {
     print "cleaning up...\n";
-    # print "removing $recovery_user...\n";
-    # unless (exists $opts{n}) {
-    # 	my $remove_recovery_cmd = "zmprov da $recovery_user";
-    # 	system ($remove_recovery_cmd);
-    # }
+    print "removing $recovery_user...\n";
+    unless (exists $opts{n}) {
+    	my $remove_recovery_cmd = "zmprov da $recovery_user";
+    	system ($remove_recovery_cmd);
+    }
 
     print "removing temp directories...\n";
     unless (exists $opts{n}) {
