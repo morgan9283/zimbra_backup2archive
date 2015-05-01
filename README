@@ -1,0 +1,5 @@
+backup2archive.pl
+Morgan Jones (morgan@morganjones.org)
+
+Restore part of an archive from a backup.  Based on Adam Cody's wiki article:
+https://wiki.zimbra.com/wiki/Troubleshooting_Course_Content_Rough_Drafts-Recover_Missing_Data_-_User#Redirected_Restore_With_No_Deletes_To_Then_Import_Data_From_A_Specific_Time_Range_Into_A_Subdirectory_Of_Users_Archive_Account
