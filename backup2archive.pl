@@ -7,7 +7,6 @@ use File::Copy;
 use strict;
 use Data::Dumper;
 use IPC::Run qw(start);
-#use LWP::Simple;
 
 sub print_usage();
 sub wanted;
@@ -89,8 +88,11 @@ for my $u (@work_users) {
 print "up to ", $#users + 1, " accounts to process\n";
 
 my $count=1;
+my $total_count=0;
 
 for my $user (@users) {
+    $total_count++;
+
     if (in_prior_output($user)) {
 	print "$user processed prior, skipping.\n";
 	next;
@@ -99,9 +101,8 @@ for my $user (@users) {
     print "\n\n*** starting on $user ($count";
     print "/" . $opts{c}
       if (exists $opts{c});
-    print ") at ", `date`;
+    print " total: ${total_count}/", $#users + 1, ") at ", `date`;
     my $archive;
-
 
 
     ## find archive account to which to restore
@@ -119,11 +120,11 @@ for my $user (@users) {
 
 
     ## restore primary account with --skipDeletes to _recovery_ account
-    my $restore_cmd = "zmrestore -d --skipDeletes -a $user -restoreToTime 20150413.121500 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
+    my $restore_cmd = "zmrestore -d --skipDeletes -a $user -restoreToTime 20150413.123000 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
     print "$restore_cmd\n";
     unless (exists $opts{n}) {
     	# if (system($restore_cmd)) {
-	#     print "\nrestore failed, exiting\n";
+    	#     print "\nrestore failed, exiting\n";
     	#     cleanup();
     	#     exit;
     	# }
@@ -167,7 +168,6 @@ for my $user (@users) {
     print "\n";
 
 
-
     ## export mail from 4/10 to 4/13
     print "exporting mail from 4/10/15 to 4/13/15...\n";
 
@@ -183,10 +183,11 @@ for my $user (@users) {
     	#     exit;
     	# }
 
-	my @cmd = qw/zmmailbox -z -m/;
+	my @cmd = qw/zmmailbox -z -t 0 -m/;
 	push @cmd, $recovery_user;
 	push @cmd, "gru";
-        push @cmd, "'//?fmt=tgz&query=under:/ after:\"4/9/15\" AND before:\"4/14/15\"'";
+#        push @cmd, "'//?fmt=tgz&query=under:/ after:\"4/9/15\" AND before:\"4/14/15\"'";
+        push @cmd, "'//?fmt=tgz&query=under:/ after:4/9/15 AND before:4/14/15'";
 
 	print join (' ', @cmd, "\n");
 
@@ -201,13 +202,16 @@ for my $user (@users) {
 
 	my $err = join ' ', @err;
 
+	print "$err";
 	if ($err =~ /status=204.  No data found/) {
 	    print "$user: no data to import, skipping.\n";
 	    cleanup();
-	    $count++;
-	    if ($count > $opts{c}) {
-		print "\nStopped processing at requested count $opts{c}, exiting.\n";
-		last;
+	    if (exists ($opts{c})) {
+		$count++;
+		if ($count > $opts{c}) {
+		    print "\nStopped processing at requested count $opts{c}, exiting.\n";
+		    last;
+		}
 	    }
 	    print "finished $user at ", `date`;
 	    next;
@@ -252,17 +256,17 @@ for my $user (@users) {
     }
 
 
-    # print "\n";
-    # print "importing messages to $archive\n";
-    # my $import_cmd = "zmmailbox -z -m $archive pru \"//?fmt=tgz&subfolder=$restore_dir\" /var/tmp/$restore_dir.tgz";
-    # print $import_cmd . "\n";
-    # unless (exists $opts{n}) {
-    # 	if (system ($import_cmd)) {
-    # 	    print "import failed, exiting.\n";
-    # 	    cleanup();
-    # 	    exit;
-    # 	}
-    # }
+    print "\n";
+    print "importing messages to $archive\n";
+    my $import_cmd = "zmmailbox -z -m $archive pru \"//?fmt=tgz&subfolder=$restore_dir\" /var/tmp/$restore_dir.tgz";
+    print $import_cmd . "\n";
+    unless (exists $opts{n}) {
+    	if (system ($import_cmd)) {
+    	    print "import failed, exiting.\n";
+    	    cleanup();
+    	    exit;
+    	}
+    }
 
 
     cleanup();
@@ -274,8 +278,8 @@ for my $user (@users) {
 	print "finished $user at ", `date`;
     }
 
+    $count++;
     if (exists $opts{c}) {
-	$count++;
 	if ($count > $opts{c}) {
 	    print "\nStopped processing at requested count $opts{c}, exiting.\n";
 	    last;
@@ -304,6 +308,7 @@ sub wanted {
 }
 
 sub cleanup {
+    print "\n";
     print "cleaning up...\n";
     print "removing $recovery_user...\n";
     unless (exists $opts{n}) {
