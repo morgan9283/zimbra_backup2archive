@@ -11,6 +11,7 @@ use IPC::Run qw(start);
 sub print_usage();
 sub wanted;
 sub in_prior_output($);
+sub finish_user($$);
 
 my $recovery_user;
 my $recovery = "_recovery_";
@@ -113,6 +114,12 @@ for my $user (@users) {
     $archive = $restored . $archive
       if (exists $opts{r});
 
+    if ($archive =~ /^\s*$/) {
+	print "$user does not have an archive, skipping\n";
+	finish_user($user, 1);
+	next;
+    }
+
     print "restoring into archive: $archive\n";
 
     $recovery_user = $recovery . $user;
@@ -120,16 +127,49 @@ for my $user (@users) {
 
 
     ## restore primary account with --skipDeletes to _recovery_ account
-    my $restore_cmd = "zmrestore -d --skipDeletes -a $user -restoreToTime 20150413.123000 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
-    print "$restore_cmd\n";
-    unless (exists $opts{n}) {
-    	# if (system($restore_cmd)) {
-    	#     print "\nrestore failed, exiting\n";
-    	#     cleanup();
-    	#     exit;
-    	# }
+#    my $restore_cmd = "zmrestore -d --skipDeletes -a $user -restoreToTime 20150413.123000 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
 
-    	if (system($restore_cmd)) {
+#    print "$restore_cmd\n";
+
+    my @restore_cmd = qw/zmrestore -d --skipDeletes -a/;
+    push @restore_cmd, $user;
+    push @restore_cmd, qw/-restoreToTime 20150413.123000 -t \/opt\/zimbra\/backup1 -ca -pre/;
+    push @restore_cmd, $recovery;
+
+    print join (' ', @restore_cmd);
+
+    unless (exists $opts{n}) {
+	#    	if (system($restore_cmd)) {
+
+	my $restore_h = start \@restore_cmd, '2>pipe', \*ERR;
+	my $restore_rc = finish $restore_h;
+
+
+	my @restore_err;
+	while (<ERR>) {
+	    push @restore_err, $_;
+	}
+	close ERR;
+
+	my $restore_err = join ' ', @restore_err;
+    
+	print "$restore_err";
+	if ($restore_err =~ /not found in backup/) {
+	    print "$user is not in the backup, skipping.\n";
+
+	    finish_user($user, 1);
+	    next;
+	}
+
+	if ($restore_err =~ /Missing full backup earlier than restore-to time for account/) {
+	    print "$user is missing a full backup, skipping.\n";
+
+	    finish_user($user, 1);
+	    next;
+	}
+
+	if (!$restore_rc) {
+	    print $restore_err;
     	    print "\nrestore failed, trying with --ignoreRedoErrors\n";
     	    my $restore_ignoreredo_cmd = "zmrestore -d --skipDeletes --ignoreRedoErrors -a $user -restoreToTime 20150413.123000 -t /opt/zimbra/backup1 -ca -pre " . $recovery;
     	    print $restore_ignoreredo_cmd . "\n";
@@ -139,6 +179,8 @@ for my $user (@users) {
     		exit;
     	    }
     	}
+
+
     }
 
 
@@ -171,22 +213,14 @@ for my $user (@users) {
     ## export mail from 4/10 to 4/13
     print "exporting mail from 4/10/15 to 4/13/15...\n";
 
-#    my $export_cmd = "zmmailbox -z -m $recovery_user gru '//?fmt=tgz&query=under:/ after:\"4/9/15\" AND before:\"4/14/15\"' > /var/tmp/msgs.tgz 2>&1";
-#    print $export_cmd . "\n";
     unless (exists $opts{n}) {
-	##   system won't fly as stderr must be captured to tell the
+	##   use IPC::Run instead of system as stderr must be captured to tell the
 	##   difference between a failure because no mail was exported for
 	##   that time range and a failure for another reason
-    	# if (system ($export_cmd)) {
-    	#     print "export failed, exiting.\n";
-    	#     cleanup();
-    	#     exit;
-    	# }
 
 	my @cmd = qw/zmmailbox -z -t 0 -m/;
 	push @cmd, $recovery_user;
 	push @cmd, "gru";
-#        push @cmd, "'//?fmt=tgz&query=under:/ after:\"4/9/15\" AND before:\"4/14/15\"'";
         push @cmd, "'//?fmt=tgz&query=under:/ after:4/9/15 AND before:4/14/15'";
 
 	print join (' ', @cmd, "\n");
@@ -339,4 +373,28 @@ sub in_prior_output($) {
     }
     close $in;
     return 0;
+}
+
+
+sub finish_user($$) {
+    my $in_user = shift;
+    my $increment = shift;
+
+    if (!defined $in_user) {
+	die "\$in_user is not defined in finish_user";
+    }
+
+    if (!defined $increment) {
+	die "\$increment is not defined in finish_user";
+    }
+
+    print "finished $in_user at ", `date`;
+
+    if (exists ($opts{c}) && $increment) {
+	$count++;
+	if ($count > $opts{c}) {
+	    print "\nStopped processing at requested count $opts{c}, exiting.\n";
+	    exit;
+	}
+    }
 }
