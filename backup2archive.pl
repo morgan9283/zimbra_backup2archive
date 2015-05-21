@@ -4,6 +4,7 @@
 use Getopt::Std;
 use File::Find;
 use File::Copy;
+use File::Basename;
 use strict;
 use Data::Dumper;
 use IPC::Run qw(start);
@@ -12,22 +13,33 @@ sub print_usage();
 sub wanted;
 sub in_prior_output($);
 sub finish_user($$);
+sub act_on_signal();
+sub check_time($);
+sub email_summary_and_exit();
+
+my $z_admin_pass = "pass";
+my $domain = "domain.org";
 
 my $recovery_user;
 my $recovery = "_recovery_";
 my $restored = "_restored_";
 my $restore_dir = "Import2015";
-my $z_admin_pass="pass";
-my $z_ldap_host="mldap01.domain.org";
+my $z_ldap_host = "mldap01." . $domain;
+my $mail_from = "morgan\@" . $domain;
+my $mail_to = "morgan\@" . $domain . ",kacless\@" . $domain;
+
+my $active_user;
+
+$SIG{'INT'} = \&act_on_signal;
 
 my %opts;
 
-getopts('nru:f:p:zc:', \%opts);
+getopts('nru:f:p:zc:et:', \%opts);
 
 if (exists $opts{c}) {
     if ($opts{c} !~ /^\d+$/) {
 	print "-c must be a number.  Exiting.";
-	exit;
+	email_summary_and_exit();
     }
 }
 
@@ -36,11 +48,28 @@ print $opts{c}, " limited "
   if (exists $opts{c});
 print " run at ", `date`;
 
+
+unless (exists $opts{u} || exists $opts{f} || exists $opts{z}) {
+    print "you must include one of -u, -f or -z\n";
+    print_usage();
+}
+
+if (exists $opts{t}) {
+    unless ($opts{t} =~ /^\s*\d{1,2}\:\d{2}\s*$/) {
+	print "stop time must be in the format h:mm or hh:mm\n\n";
+	print_usage();
+    }
+    print "-t used, script will stop running at (or soon after) $opts{t}\n";
+}
+
 print "-c used, limiting processing to $opts{c} accounts\n"
   if (exists $opts{c});
 
 print "-n used, no changes will be made\n"
   if (exists $opts{n});
+
+print "-e used, email will be sent to $mail_to on exit\n"
+  if (exists $opts{e});
 
 if (exists $opts{p}) {
     if (defined $opts{p}) {
@@ -48,10 +77,6 @@ if (exists $opts{p}) {
     } else {
 	print "-p requires a valid file name\n";
     }
-}
-
-unless (exists $opts{u} || exists $opts{f} || exists $opts{z}) {
-    print_usage();
 }
 
 if ((exists $opts{u} && exists $opts{f}) || (exists $opts{u} && exists $opts{z}) || 
@@ -67,7 +92,7 @@ if (exists $opts{u}) {
 } elsif (exists $opts{f}) {
     if (!defined $opts{f}) {
 	print "no file specified, exiting.\n";
-	exit;
+	email_summary_and_exit();
     }
     print "-f chosen, opening $opts{f}...\n";
     open (IN, $opts{f}) || die "can't open $opts{f}";
@@ -91,8 +116,17 @@ print "up to ", $#users + 1, " accounts to process\n";
 my $count=1;
 my $total_count=0;
 
-for my $user (@users) {
+USERLOOP: for my $user (@users) {
     $total_count++;
+
+    if (exists $opts{t}) {    
+	if (check_time($opts{t})) {
+	    print "\nit's after $opts{t}, exiting.\n";
+	    last;
+	}
+    }
+
+    my $active_user = $user;
 
     if (in_prior_output($user)) {
 	print "$user processed prior, skipping.\n";
@@ -139,8 +173,6 @@ for my $user (@users) {
     print join (' ', @restore_cmd);
 
     unless (exists $opts{n}) {
-	#    	if (system($restore_cmd)) {
-
 	my $restore_h = start \@restore_cmd, '2>pipe', \*ERR;
 	my $restore_rc = finish $restore_h;
 
@@ -176,7 +208,7 @@ for my $user (@users) {
     	    if (system ($restore_ignoreredo_cmd)) {
     		print "\nrestore failed with --ignoreRedoErrors, giving up\n";
     		cleanup();
-    		exit;
+    		email_summary_and_exit();
     	    }
     	}
 
@@ -209,67 +241,71 @@ for my $user (@users) {
 
     print "\n";
 
-
+    while (1) {
     ## export mail from 4/10 to 4/13
-    print "exporting mail from 4/10/15 to 4/13/15...\n";
-
-    unless (exists $opts{n}) {
-	##   use IPC::Run instead of system as stderr must be captured to tell the
-	##   difference between a failure because no mail was exported for
-	##   that time range and a failure for another reason
+	print "exporting mail from 4/10/15 to 4/13/15...\n";
 
 	my @cmd = qw/zmmailbox -z -t 0 -m/;
 	push @cmd, $recovery_user;
 	push @cmd, "gru";
-        push @cmd, "'//?fmt=tgz&query=under:/ after:4/9/15 AND before:4/14/15'";
-
+	push @cmd, "'//?fmt=tgz&query=under:/ after:4/9/15 AND before:4/14/15'";
+    
 	print join (' ', @cmd, "\n");
 
-	my $h = start \@cmd, '>', '/var/tmp/msgs.tgz', '2>pipe', \*ERR;
-	my $rc = finish $h;
+	unless (exists $opts{n}) {
+	    ##   use IPC::Run instead of system as stderr must be captured to tell the
+	    ##   difference between a failure because no mail was exported for
+	    ##   that time range and a failure for another reason
 
-	my @err;
-	while (<ERR>) {
-	    push @err, $_;
-	}
-	close ERR;
+	    my $h = start \@cmd, '>', '/var/tmp/msgs.tgz', '2>pipe', \*ERR;
+	    my $rc = finish $h;
 
-	my $err = join ' ', @err;
-
-	print "$err";
-	if ($err =~ /status=204.  No data found/) {
-	    print "$user: no data to import, skipping.\n";
-	    cleanup();
-	    if (exists ($opts{c})) {
-		$count++;
-		if ($count > $opts{c}) {
-		    print "\nStopped processing at requested count $opts{c}, exiting.\n";
-		    last;
-		}
+	    my @err;
+	    while (<ERR>) {
+		push @err, $_;
 	    }
-	    print "finished $user at ", `date`;
-	    next;
-	}
+	    close ERR;
 
-	if (!$rc) {
-	    print $err;
-    	    print "export failed, exiting.\n";
-    	    cleanup();
-    	    exit;
-    	}
+	    my $err = join ' ', @err;
+
+	    print "$err";
+	    if ($err =~ /status=204.  No data found/) {
+		print "$user: no data to import, skipping.\n";
+		cleanup();
+		if (exists ($opts{c})) {
+		    $count++;
+		    if ($count > $opts{c}) {
+			print "\nStopped processing at requested count $opts{c}, exiting.\n";
+			last USERLOOP;
+		    }
+		}
+		print "finished $user at ", `date`;
+		next USERLOOP;
+	    } elsif ($err =~ /Internal Server Error/) {
+		print "Internal Server Error, waiting 10 minutes and retrying...\n";
+		sleep 600;
+		next;
+	    }
+
+
+	    if (!$rc) {
+		print $err;
+		print "export failed, exiting.\n";
+		cleanup();
+		email_summary_and_exit();
+	    }
+	}
+	last;
     }
 
-
-
     ## decompress exported files, move to $restore_dir and compress for input via pru
-    
     my $decompress_cmd = "(mkdir /var/tmp/$restore_dir && mkdir /var/tmp/msgs && cd /var/tmp/msgs && tar xfz ../msgs.tgz)";
     print $decompress_cmd . "\n";
     unless (exists $opts{n}) {
     	if (system ($decompress_cmd)) {
     	    print "decompress messages failed, exiting.\n";
     	    cleanup();
-    	    exit;
+    	    email_summary_and_exit();
     	}
     }
 
@@ -285,7 +321,7 @@ for my $user (@users) {
     	if (system ($compress_cmd)) {
     	    print "compress failed, exiting.\n";
     	    cleanup();
-    	    exit;
+    	    email_summary_and_exit();
     	}
     }
 
@@ -298,7 +334,7 @@ for my $user (@users) {
     	if (system ($import_cmd)) {
     	    print "import failed, exiting.\n";
     	    cleanup();
-    	    exit;
+    	    email_summary_and_exit();
     	}
     }
 
@@ -306,7 +342,8 @@ for my $user (@users) {
     cleanup();
 
     if (exists $opts{n}) {
-	# print a slightly different message for a dry run so the script doesn't skip this user on future runs
+	# print a slightly different message for a dry run so the
+	# script doesn't skip this user on future runs
 	print "finished (dry) $user at ", `date`;
     } else {
 	print "finished $user at ", `date`;
@@ -322,12 +359,25 @@ for my $user (@users) {
 }
 
 print "finished run at ", `date`;
+email_summary_and_exit();
 
 sub print_usage() {
-    print "usage: $0 [-n] [-r] [-c <count>] [-p <previous output file>] \n";
-    print "\t-u <user> | -f <user list file> | -z \n";
     print "\n";
-    exit;
+    print "usage: $0 [-n] [-r] [-c <count>]\n";
+    print "\t[-p <previous output file>] [-e]\n";
+    print "\t-f <time> -u <user> | -f <user list file> | -z \n";
+    print "-n print only, do not make changes\n";
+    print "-r restore to an archive prefaced with contents of \$restored\n";
+    print "-c <count> stop after count users\n";
+    print "-p <previous output file> use previous output file from this script to determine\n";
+    print "\tusers that have already been processed\n";
+    print "\t-e send an email summary\n";
+    print "\t-f <time> choose a stop time in hh:mm, 0-23, 00-60.\n";
+    print "\tMore than 24 run time not supported\n";
+    print "-u <user> | -f <user list file> | -z mutually exclusive: work on one user (-u),\n";
+    print "\ta list of users (-f) or get a list from zmprov sa zimbramailhost=\`zmhostname\`\n";
+    print "\n";
+    email_summary_and_exit();
 }
 
 
@@ -336,7 +386,7 @@ sub wanted {
 	if (!move ($File::Find::name, "/var/tmp/$restore_dir")) {
 	    print "moving $File::Find::name failed, exiting\n";
 	    cleanup();
-	    exit;
+	    email_summary_and_exit();
 	}
     }
 }
@@ -344,10 +394,12 @@ sub wanted {
 sub cleanup {
     print "\n";
     print "cleaning up...\n";
-    print "removing $recovery_user...\n";
-    unless (exists $opts{n}) {
-    	my $remove_recovery_cmd = "zmprov da $recovery_user";
-    	system ($remove_recovery_cmd);
+    if (defined $recovery_user) {
+	print "removing $recovery_user...\n";
+	unless (exists $opts{n}) {
+	    my $remove_recovery_cmd = "zmprov da $recovery_user";
+	    system ($remove_recovery_cmd);
+	}
     }
 
     print "removing temp directories...\n";
@@ -394,7 +446,66 @@ sub finish_user($$) {
 	$count++;
 	if ($count > $opts{c}) {
 	    print "\nStopped processing at requested count $opts{c}, exiting.\n";
-	    exit;
+	    email_summary_and_exit();
 	}
     }
+}
+
+
+sub act_on_signal() {
+    print "caught exit signal, cleaning up...\n";
+    cleanup();
+    exit();
+}
+
+
+sub check_time($) {
+    my $t = shift;
+
+    my ($min, $hour) = (localtime(time))[1,2];
+
+    my $compare_time = $t;
+    $compare_time =~ s/://;
+    my $current_time = $hour.$min;
+
+    return 1
+      if ($current_time >= $compare_time);
+    
+    return 0;
+}
+
+
+
+sub email_summary_and_exit() {
+    if (exists ($opts{e})) {
+	if (exists $opts{p}) {
+	    print "\nsending compressed email summary...\n";
+	    my $output_base = basename ($opts{p}, ());
+	    my $output_dirname = dirname ($opts{p});
+
+	    my $gz_result = 0;
+
+	    my $datestamp = `date +%g%m%d%H%M%S`;
+	    chomp $datestamp;
+
+	    my $datestamp_file = $output_base . "_" . $datestamp . ".gz";
+
+	    my $gz_cmd = "gzip -c $opts{p} > ${output_dirname}/${datestamp_file}";
+	    print $gz_cmd . "\n";
+	    $gz_result = 1
+	      if (system ($gz_cmd));
+
+	    my $uu = `uuencode ${output_dirname}/${datestamp_file} ${datestamp_file}`
+	      unless ($gz_result);
+
+	    open (MAIL, "|mail -s \"backup2archive stopped `hostname`\" $mail_to");
+	    unless ($gz_result) {
+		print MAIL "The output file is attached.\n\n";
+		print MAIL $uu;
+	    }
+	    close (MAIL);
+	}
+    }
+
+    exit;
 }
