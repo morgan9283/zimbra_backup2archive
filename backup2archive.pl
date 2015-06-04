@@ -47,6 +47,7 @@ my $mail_to = "morgan\@" . $domain . ",kacless\@" . $domain;
 my $active_user;
 
 $SIG{'INT'} = \&act_on_signal;
+local $ENV{PATH} = "/opt/zimbra/bin:$ENV{PATH}";
 
 my %opts;
 
@@ -288,8 +289,9 @@ USERLOOP: for my $user (@users) {
 	    if ($err =~ /status=204.  No data found/) {
 		print "$user: no data to import, skipping.\n";
 		cleanup();
+# here?
+		$count++;
 		if (exists ($opts{c})) {
-		    $count++;
 		    if ($count > $opts{c}) {
 			print "\nStopped processing at requested count $opts{c}, exiting.\n";
 			last USERLOOP;
@@ -354,16 +356,7 @@ USERLOOP: for my $user (@users) {
     	}
     }
 
-
     cleanup();
-
-    if (exists $opts{n}) {
-	# print a slightly different message for a dry run so the
-	# script doesn't skip this user on future runs
-	print "finished (dry) $user at ", `date`;
-    } else {
-	print "finished $user at ", `date`;
-    }
 
     $count++;
     if (exists $opts{c}) {
@@ -371,6 +364,14 @@ USERLOOP: for my $user (@users) {
 	    print "\nStopped processing at requested count $opts{c}, exiting.\n";
 	    last;
 	}
+    }
+
+    if (exists $opts{n}) {
+	# print a slightly different message for a dry run so the
+	# script doesn't skip this user on future runs
+	print "finished (dry) $user at ", `date`;
+    } else {
+	print "finished $user at ", `date`;
     }
 }
 
@@ -458,8 +459,8 @@ sub finish_user($$) {
 
     print "finished $in_user at ", `date`;
 
+    $count++;
     if (exists ($opts{c}) && $increment) {
-	$count++;
 	if ($count > $opts{c}) {
 	    print "\nStopped processing at requested count $opts{c}, exiting.\n";
 	    email_summary_and_exit();
