@@ -12,7 +12,7 @@
 # script end in an error.
 #
 # This can't run while the backups are running so you
-# should specify an end time (-p) that is a few minutes before you
+# should specify an end time (-p) that is 10-15 minutes before you
 # backups start.  Ours start at 21:00.
 #
 # backup2archive.pl -z -p /var/tmp/backup2archive_`zmhostname`.out -e -t 20:45 2>&1 | tee -a /var/tmp/backup2archive_`zmhostname`.out
@@ -32,6 +32,8 @@ sub finish_user($$);
 sub act_on_signal();
 sub check_time($);
 sub email_summary_and_exit();
+
+$|=1;
 
 my $z_admin_pass = "pass";
 my $domain = "domain.org";
@@ -132,6 +134,7 @@ print "up to ", $#users + 1, " accounts to process\n";
 
 my $count=1;
 my $total_count=0;
+my $prior_found=0;
 
 USERLOOP: for my $user (@users) {
     $total_count++;
@@ -146,7 +149,10 @@ USERLOOP: for my $user (@users) {
     my $active_user = $user;
 
     if (in_prior_output($user)) {
-	print "$user processed prior, skipping.\n";
+	print "skipping at least one user processed prior\n"
+	  if ($prior_found == 0);
+	$prior_found = 1;
+#	print "$user processed prior, skipping.\n";
 	next;
     }
 
